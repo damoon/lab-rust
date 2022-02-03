@@ -48,12 +48,12 @@ enum Message {
     FlushCommand,
 }
 
-async fn use_tokio_channels(size: usize) {
+async fn use_tokio_channels(size: usize, chunks: usize) {
     let (tx, mut rx) = mpsc::channel(100);
 
     tokio::spawn(async move {
         for i in 1..=size {
-            if i % 1000 == 0 {
+            if i % chunks == 0 {
                 if let Err(e) = tx.send(Message::FlushCommand).await {
                     panic!("send error: {}", e)
                 }
@@ -63,7 +63,10 @@ async fn use_tokio_channels(size: usize) {
             if let Err(e) = tx.send(Message::Event("Hello, world.".to_string())).await {
                 panic!("send error: {}", e)
             }
+        }
 
+        if let Err(e) = tx.send(Message::FlushCommand).await {
+            panic!("send error: {}", e)
         }
     });
 
@@ -77,18 +80,36 @@ async fn use_tokio_channels(size: usize) {
     }
 }
 
+fn bench_use_tokio_channels(c: &mut Criterion) {
+    let size: usize = 1_000;
+    let chunks = 1_000;
+    c.bench_with_input(BenchmarkId::new("use_tokio_channels", size), &size, |b, &s| {
+        // Insert a call to `to_async` to convert the bencher to async mode.
+        // The timing loops are the same as with the normal bencher.
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_tokio_channels(size, chunks));
+    });
+
+    let size: usize = 1_000_000;
+    let chunks = 1_000;
+    c.bench_with_input(BenchmarkId::new("use_tokio_channels", size), &size, |b, &s| {
+        // Insert a call to `to_async` to convert the bencher to async mode.
+        // The timing loops are the same as with the normal bencher.
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_tokio_channels(size, chunks));
+    });
+}
+
 struct Event {
     k: &'static str,
 }
 struct Flush {}
 
-async fn use_two_tokio_channels(size: usize) {
+async fn use_two_tokio_channels(size: usize, chunks: usize) {
     let (tx1, mut rx1) = mpsc::channel(100);
     let (tx2, mut rx2) = mpsc::channel(100);
 
     tokio::spawn(async move {
         for i in 1..=size {
-            if i % 1000 == 0 {
+            if i % chunks == 0 {
                 if let Err(e) = tx2.send(Flush{}).await {
                     panic!("send error: {}", e)
                 }
@@ -99,37 +120,45 @@ async fn use_two_tokio_channels(size: usize) {
                 panic!("send error: {}", e)
             }
         }
+
+        if let Err(e) = tx2.send(Flush{}).await {
+            panic!("send error: {}", e)
+        }
     });
 
-    tokio::select!{
-        Some(e) = rx1.recv() => {
-            black_box(e);
-        }
-        Some(e) = rx2.recv() => {
-            black_box(e);
-        }
-        else => {
-            // Both channels closed
-            return
+    loop {
+        tokio::select!{
+            Some(e) = rx1.recv() => {
+                black_box(e);
+            }
+            Some(e) = rx2.recv() => {
+                black_box(e);
+            }
+            else => {
+                // Both channels closed
+                return
+            }
         }
     }
 }
 
-fn from_elem(c: &mut Criterion) {
+fn bench_use_two_tokio_channels(c: &mut Criterion) {
     let size: usize = 1_000;
-    c.bench_with_input(BenchmarkId::new("input_example", size), &size, |b, &s| {
+    let chunks = 1_000;
+    c.bench_with_input(BenchmarkId::new("use_two_tokio_channels", size), &size, |b, &s| {
         // Insert a call to `to_async` to convert the bencher to async mode.
         // The timing loops are the same as with the normal bencher.
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(s));
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(size, chunks));
     });
 
     let size: usize = 1_000_000;
-    c.bench_with_input(BenchmarkId::new("input_example", size), &size, |b, &s| {
+    let chunks = 1_000;
+    c.bench_with_input(BenchmarkId::new("use_two_tokio_channels", size), &size, |b, &s| {
         // Insert a call to `to_async` to convert the bencher to async mode.
         // The timing loops are the same as with the normal bencher.
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(s));
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(size, chunks));
     });
 }
 
-criterion_group!(benches, from_elem);
+criterion_group!(benches, bench_use_tokio_channels, bench_use_two_tokio_channels);
 criterion_main!(benches);
