@@ -1,0 +1,18 @@
+[package]
+name = "lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.16.1", features = ["full"] }
+
+[profile.release]
+#codegen-units = 1
+#lto = true
+
+[dev-dependencies]
+criterion = { version = "0.3", features = ["async_tokio", "async_std", "async_smol", "async_futures", "async"] }
+
+[[bench]]
+name = "my_benchmark"
+harness = false
