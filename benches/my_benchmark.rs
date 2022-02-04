@@ -1,46 +1,41 @@
-use criterion::BenchmarkId;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use lab::{fibonacci_slow, fibonacci_fast, fibonacci_realy_fast};
-use std::{
-    fs::File,
-    io::{Read, Write},
-    time::Instant,
-};
-use tokio::task::{self, JoinHandle};
-//use tokio::runtime::Runtime;
-use criterion::async_executor::FuturesExecutor;
-use criterion::async_executor::AsyncExecutor;
-use tokio::sync::mpsc;
+use criterion::{BenchmarkId, black_box, criterion_group, criterion_main, Criterion};
 
-pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("o(n^2) fib 20", |b| b.iter(|| fibonacci_slow(black_box(20))));
-    c.bench_function("o(n) fib 120", |b| b.iter(|| fibonacci_fast(black_box(120))));
-    c.bench_function("o(1) fib 1000", |b| b.iter(|| fibonacci_realy_fast(black_box(1000))));
-}
+criterion_main!(benches);
 
-async fn do_something(size: usize) {
-    
-    let handles: Vec<JoinHandle<_>> = (0..size)
-        .map(|_| {
-            tokio::spawn(async move {
-                let mut buffer = [0; 10];
-                {
+criterion_group!(benches, bench_async_runtimes_and_channels);
 
-                    task::block_in_place(move || {
-                        let mut dev_urandom = File::open("/dev/urandom").unwrap();
-                        dev_urandom.read(&mut buffer).unwrap();
-                    });
-                }
-                task::block_in_place(move || {
-                    let mut dev_null = File::create("/dev/null").unwrap();
-                    dev_null.write(&mut buffer).unwrap();
-                });
-            })
-        })
-        .collect();
-    for handle in handles {
-        handle.await.unwrap();
-    }
+fn bench_async_runtimes_and_channels(c: &mut Criterion) {
+    let size: usize = 1_000_000;
+    let chunks = 1_000;
+
+    // Tokio
+    c.bench_with_input(BenchmarkId::new("use_tokio_channels", size), &size, |b, &size| {
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_tokio_channels(size, chunks));
+    });
+
+    c.bench_with_input(BenchmarkId::new("use_two_tokio_channels", size), &size, |b, &size| {
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(size, chunks));
+    });
+
+    // async-std
+    c.bench_with_input(BenchmarkId::new("use_async_std_channels", size), &size, |b, &size| {
+        b.to_async(criterion::async_executor::AsyncStdExecutor).iter(|| use_async_std_channels(size, chunks));
+    });
+
+    c.bench_with_input(BenchmarkId::new("use_two_async_std_channels", size), &size, |b, &size| {
+        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_async_std_channels(size, chunks));
+    });
+
+    // smol
+    c.bench_with_input(BenchmarkId::new("use_smol_channels", size), &size, |b, &size| {
+        b.to_async(criterion::async_executor::SmolExecutor).iter(|| use_smol_channels(size, chunks));
+    });
+
+    c.bench_with_input(BenchmarkId::new("use_two_smol_channels", size), &size, |b, &size| {
+        b.to_async(criterion::async_executor::SmolExecutor).iter(|| use_two_smol_channels(size, chunks));
+    });
+
+    // futures
 }
 
 enum Message {
@@ -48,8 +43,13 @@ enum Message {
     FlushCommand,
 }
 
+struct Event {
+    k: String,
+}
+struct Flush {}
+
 async fn use_tokio_channels(size: usize, chunks: usize) {
-    let (tx, mut rx) = mpsc::channel(100);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
     tokio::spawn(async move {
         for i in 1..=size {
@@ -80,32 +80,9 @@ async fn use_tokio_channels(size: usize, chunks: usize) {
     }
 }
 
-fn bench_use_tokio_channels(c: &mut Criterion) {
-    let size: usize = 1_000;
-    let chunks = 1_000;
-    c.bench_with_input(BenchmarkId::new("use_tokio_channels", size), &size, |b, &s| {
-        // Insert a call to `to_async` to convert the bencher to async mode.
-        // The timing loops are the same as with the normal bencher.
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_tokio_channels(size, chunks));
-    });
-
-    let size: usize = 1_000_000;
-    let chunks = 1_000;
-    c.bench_with_input(BenchmarkId::new("use_tokio_channels", size), &size, |b, &s| {
-        // Insert a call to `to_async` to convert the bencher to async mode.
-        // The timing loops are the same as with the normal bencher.
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_tokio_channels(size, chunks));
-    });
-}
-
-struct Event {
-    k: &'static str,
-}
-struct Flush {}
-
 async fn use_two_tokio_channels(size: usize, chunks: usize) {
-    let (tx1, mut rx1) = mpsc::channel(100);
-    let (tx2, mut rx2) = mpsc::channel(100);
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(100);
+    let (tx2, mut rx2) = tokio::sync::mpsc::channel(100);
 
     tokio::spawn(async move {
         for i in 1..=size {
@@ -116,7 +93,7 @@ async fn use_two_tokio_channels(size: usize, chunks: usize) {
                 continue
             }
 
-            if let Err(e) = tx1.send(Event{k: "hwllo , wol"}).await {
+            if let Err(e) = tx1.send(Event{k: "hwllo , wol".to_string()}).await {
                 panic!("send error: {}", e)
             }
         }
@@ -129,7 +106,7 @@ async fn use_two_tokio_channels(size: usize, chunks: usize) {
     loop {
         tokio::select!{
             Some(e) = rx1.recv() => {
-                black_box(e);
+                black_box(e.k);
             }
             Some(e) = rx2.recv() => {
                 black_box(e);
@@ -142,23 +119,161 @@ async fn use_two_tokio_channels(size: usize, chunks: usize) {
     }
 }
 
-fn bench_use_two_tokio_channels(c: &mut Criterion) {
-    let size: usize = 1_000;
-    let chunks = 1_000;
-    c.bench_with_input(BenchmarkId::new("use_two_tokio_channels", size), &size, |b, &s| {
-        // Insert a call to `to_async` to convert the bencher to async mode.
-        // The timing loops are the same as with the normal bencher.
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(size, chunks));
+async fn use_async_std_channels(size: usize, chunks: usize) {
+    let (tx, rx) = async_std::channel::bounded(100);
+
+    async_std::task::spawn(async move {
+        for i in 1..=size {
+            if i % chunks == 0 {
+                if let Err(e) = tx.send(Message::FlushCommand).await {
+                    panic!("send error: {}", e)
+                }
+                continue
+            }
+
+            if let Err(e) = tx.send(Message::Event("Hello, world.".to_string())).await {
+                panic!("send error: {}", e)
+            }
+        }
+
+        if let Err(e) = tx.send(Message::FlushCommand).await {
+            panic!("send error: {}", e)
+        }
     });
 
-    let size: usize = 1_000_000;
-    let chunks = 1_000;
-    c.bench_with_input(BenchmarkId::new("use_two_tokio_channels", size), &size, |b, &s| {
-        // Insert a call to `to_async` to convert the bencher to async mode.
-        // The timing loops are the same as with the normal bencher.
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| use_two_tokio_channels(size, chunks));
-    });
+    while let Ok(message) = rx.recv().await {
+        match message {
+            Message::Event(e) => {
+                black_box(e);
+            },
+            Message::FlushCommand => {}
+        }
+    }
 }
 
-criterion_group!(benches, bench_use_tokio_channels, bench_use_two_tokio_channels);
-criterion_main!(benches);
+async fn use_two_async_std_channels(size: usize, chunks: usize) {
+    let (tx1, rx1) = async_std::channel::bounded(100);
+    let (tx2, rx2) = async_std::channel::bounded(100);
+
+    async_std::task::spawn(async move {
+        for i in 1..=size {
+            if i % chunks == 0 {
+                if let Err(e) = tx2.send(Flush{}).await {
+                    panic!("send error: {}", e)
+                }
+                continue
+            }
+
+            if let Err(e) = tx1.send(Event{k: "hwllo , wol".to_string()}).await {
+                panic!("send error: {}", e)
+            }
+        }
+
+        if let Err(e) = tx2.send(Flush{}).await {
+            panic!("send error: {}", e)
+        }
+    });
+
+    /*
+    loop {
+        tokio::select!{
+            Ok(e) = rx1.recv() => {
+                black_box(e.k);
+            }
+            Ok(e) = rx2.recv() => {
+                black_box(e);
+            }
+            else => {
+                // Both channels closed
+                return
+            }
+        }
+    }
+    */
+
+    loop {
+        tokio::select!{
+            Ok(e) = rx1.recv() => {
+                black_box(e.k);
+            }
+            Ok(e) = rx2.recv() => {
+                black_box(e);
+            }
+            else => {
+                // Both channels closed
+                return
+            }
+        }
+    }
+}
+
+async fn use_smol_channels(size: usize, chunks: usize) {
+    let (tx, rx) = smol::channel::bounded(100);
+
+    smol::spawn(async move {
+        for i in 1..=size {
+            if i % chunks == 0 {
+                if let Err(e) = tx.send(Message::FlushCommand).await {
+                    panic!("send error: {}", e)
+                }
+                continue
+            }
+
+            if let Err(e) = tx.send(Message::Event("Hello, world.".to_string())).await {
+                panic!("send error: {}", e)
+            }
+        }
+
+        if let Err(e) = tx.send(Message::FlushCommand).await {
+            panic!("send error: {}", e)
+        }
+    }).detach();
+
+    while let Ok(message) = rx.recv().await {
+        match message {
+            Message::Event(e) => {
+                black_box(e);
+            },
+            Message::FlushCommand => {}
+        }
+    }
+}
+
+async fn use_two_smol_channels(size: usize, chunks: usize) {
+    let (tx1, rx1) = smol::channel::bounded(100);
+    let (tx2, rx2) = smol::channel::bounded(100);
+
+    smol::spawn(async move {
+        for i in 1..=size {
+            if i % chunks == 0 {
+                if let Err(e) = tx2.send(Flush{}).await {
+                    panic!("send error: {}", e)
+                }
+                continue
+            }
+
+            if let Err(e) = tx1.send(Event{k: "hwllo , wol".to_string()}).await {
+                panic!("send error: {}", e)
+            }
+        }
+
+        if let Err(e) = tx2.send(Flush{}).await {
+            panic!("send error: {}", e)
+        }
+    }).detach();
+
+    loop {
+        tokio::select!{
+            Ok(e) = rx1.recv() => {
+                black_box(e.k);
+            }
+            Ok(e) = rx2.recv() => {
+                black_box(e);
+            }
+            else => {
+                // Both channels closed
+                return
+            }
+        }
+    }
+}
