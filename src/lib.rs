@@ -1,3 +1,6 @@
+pub mod stack;
+pub mod trait_example;
+
 #[cfg(test)]
 mod tests {
     #[test]
